@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Smartstake Live Data</title>
-  <meta name="description" content="Live readings from printed ion-selective electrode sensors logged by an ESP32 to Google Sheets.">
+  <meta name="description" content="Live readings from printed ion-selective electrode sensors.">
   <link rel="stylesheet" href="style.css">
   <script src="config.js"></script>
   <script src="app.js" defer></script>
@@ -14,7 +14,7 @@
     <header class="page-header">
       <div>
         <h1 id="title">Smartstake live data</h1>
-        <p class="lede">Printed ion-selective electrodes in the field, read by an ESP32 logger and streamed to Google Sheets.</p>
+        <p class="lede">Printed nitrate sensors, streaming live.</p>
       </div>
       <div class="status" id="status" role="status">
         <span class="status-icon" id="status-icon" aria-hidden="true"></span>
@@ -29,6 +29,7 @@
         <select id="unit-select"></select>
       </label>
       <span class="updated" id="updated"></span>
+      <button type="button" class="button" id="download">Download CSV</button>
     </div>
 
     <p class="banner" id="banner" hidden></p>
@@ -36,19 +37,13 @@
     <section class="tiles" id="tiles" aria-label="Latest values"></section>
 
     <section>
-      <h2 id="pair-heading">Electrode potentials</h2>
-      <p class="section-note" id="pair-note"></p>
+      <h2 id="pair-heading">Potential</h2>
       <div class="grid" id="pair-charts"></div>
     </section>
 
-    <section>
-      <h2>Environment</h2>
-      <div class="grid" id="env-charts"></div>
-    </section>
-
-    <section>
-      <h2>Calibration</h2>
-      <p class="section-note">Concentration is computed per pair from E = E<sub>0</sub> + S·log<sub>10</sub>(C / mM), with E the raw logger reading in mV. Fit E<sub>0</sub> and S from standards measured with this logger, so any readout offset is absorbed into E<sub>0</sub>. Edits here apply to this browser only; use <em>Copy as config.js</em> and paste into <code>docs/config.js</code> to publish them for everyone.</p>
+    <details class="cal">
+      <summary>Calibration</summary>
+      <p class="section-note">E = E<sub>0</sub> + S·log<sub>10</sub>(C / mM), with E the logger reading in mV.</p>
       <div class="card table-card">
         <table id="cal-table">
           <thead>
@@ -56,37 +51,20 @@
               <th scope="col">Pair</th>
               <th scope="col" class="num">E<sub>0</sub>, mV</th>
               <th scope="col" class="num">Slope, mV/decade</th>
-              <th scope="col" class="num">Latest potential</th>
-              <th scope="col" class="num" id="cal-conc-head">Latest concentration</th>
+              <th scope="col" class="num">Latest</th>
+              <th scope="col" class="num" id="cal-conc-head">Concentration</th>
             </tr>
           </thead>
           <tbody></tbody>
         </table>
       </div>
       <div class="cal-actions">
-        <button type="button" class="button" id="cal-copy">Copy as config.js</button>
-        <button type="button" class="button" id="cal-reset">Reset to config.js values</button>
+        <button type="button" class="button" id="cal-copy">Copy for config.js</button>
+        <button type="button" class="button" id="cal-reset">Reset</button>
         <span class="cal-msg" id="cal-msg" role="status"></span>
       </div>
       <pre class="snippet" id="cal-snippet" hidden></pre>
-    </section>
-
-    <section>
-      <div class="section-head">
-        <h2>Latest readings</h2>
-        <button type="button" class="button" id="download">Download CSV</button>
-      </div>
-      <div class="card table-card">
-        <table id="latest-table">
-          <thead><tr><th scope="col">Channel</th><th scope="col" class="num">Value</th></tr></thead>
-          <tbody></tbody>
-        </table>
-      </div>
-    </section>
-
-    <footer class="page-footer">
-      <p>Data path: electrodes → 8:1 analog muxes → ADS1110 16-bit ADC → ESP32 Feather → Google Apps Script → Google Sheets → this page.</p>
-    </footer>
+    </details>
   </div>
 </body>
 </html>

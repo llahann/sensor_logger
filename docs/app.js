@@ -152,7 +152,6 @@
     if (raw === "" || raw === null || raw === undefined) return NaN;
     const v = Number(raw);
     if (!Number.isFinite(v)) return NaN;
-    if (name.startsWith("temp") && v <= -100) return NaN;  // DS18B20 reads -127 when unplugged
     return v;
   }
 
@@ -194,7 +193,7 @@
   }
 
   // Simulated rows with the logger's column layout: nitrate on every pair,
-  // slow uptake with dosing every 2 days, diurnal temperature, slow electrode
+  // slow uptake with dosing every 2 days, a small diurnal swing, slow electrode
   // drift and noise. Values are volts like the sheet.
   function makeDemoData(hours) {
     const stepMs = CYCLE_SECONDS * 1000;
@@ -203,7 +202,7 @@
     const epoch = end - 7 * 24 * HOUR;
     const pairs = demoPairs();
 
-    const names = ["temp1", "temp2", "vbat", ...pairs.map((p) => p.name)];
+    const names = ["vbat", ...pairs.map((p) => p.name)];
     const times = new Float64Array(count);
     const values = {};
     names.forEach((name) => (values[name] = new Float64Array(count)));
@@ -222,19 +221,16 @@
       const days = (t - epoch) / (24 * HOUR);
       const dosePhase = (days / 2) % 1;
 
-      const temp1 = 21 + 2.4 * Math.sin((2 * Math.PI * (hod - 9)) / 24) + 0.05 * noise(k, 1);
-      const temp2 = 19.6 + 1.6 * Math.sin((2 * Math.PI * (hod - 10)) / 24) + 0.05 * noise(k, 2);
+      const diurnal = 0.7 * Math.sin((2 * Math.PI * (hod - 9)) / 24);   // mV
       const sun = Math.max(0, Math.sin((2 * Math.PI * (hod - 6)) / 24));
       const vbat = 3.82 + 0.22 * sun + 0.004 * noise(k, 3);
 
       times[i] = t;
-      values.temp1[i] = temp1;
-      values.temp2[i] = temp2;
       values.vbat[i] = vbat;
 
       const nitrate = 6 - 2.2 * dosePhase;   // mM
       pairs.forEach((p) => {
-        const mv = p.e0 + p.slope * Math.log10(nitrate) + 0.3 * (temp1 - 20)
+        const mv = p.e0 + p.slope * Math.log10(nitrate) + diurnal
           + p.drift * days + 0.35 * noise(k, p.seed);
         values[p.name][i] = mv / 1000;
       });
@@ -342,32 +338,12 @@
           unit: concentration ? unit.label : "mV",
           decimals: concentration ? unit.decimals : 1,
           emptyText: concentration && series.every((x) => x.label.endsWith("uncalibrated"))
-            ? "Not calibrated. Enter E₀ and slope under Calibration."
+            ? "Not calibrated"
             : "",
           series,
         });
       });
     });
-    return specs;
-  }
-
-  function envSpecs(names) {
-    const has = (n) => names.includes(n);
-    const specs = [];
-    const identity = (v) => v;
-    const temps = [
-      { key: "temp1", label: "Probe 1", slot: 1, transform: identity },
-      { key: "temp2", label: "Probe 2", slot: 2, transform: identity },
-    ].filter((s) => has(s.key));
-    if (temps.length) {
-      specs.push({ id: "temp", title: "Temperature", subtitle: "DS18B20 probes, °C", unit: "°C", decimals: 2, series: temps });
-    }
-    if (has("vbat")) {
-      specs.push({
-        id: "vbat", title: "Battery voltage", subtitle: "LiPo, V", unit: "V", decimals: 2,
-        series: [{ key: "vbat", label: "Battery", slot: 1, transform: identity }],
-      });
-    }
     return specs;
   }
 
@@ -673,11 +649,11 @@
     if (state.error) {
       banner.hidden = false;
       banner.dataset.kind = "error";
-      banner.textContent = `Couldn't load new data (${state.error.message}). ${state.data ? "Showing the last data received." : "Check dataUrl in config.js and that the web app is deployed with access for Anyone."}`;
+      banner.textContent = `Couldn't load new data (${state.error.message}).`;
     } else if (DEMO) {
       banner.hidden = false;
       banner.dataset.kind = "info";
-      banner.textContent = "Showing simulated data. Set dataUrl in config.js to your Apps Script web app URL to show live readings.";
+      banner.textContent = "Showing simulated data.";
     } else {
       banner.hidden = true;
     }
@@ -705,48 +681,18 @@
       "",
       Number.isFinite(lastTime) ? fullTime(lastTime) : "No data in range"
     );
-    const pairs = view.names.filter((n) => PAIR_COLUMN.test(n));
-    if (state.mode === "concentration") {
-      const unit = UNITS[state.unitKey];
-      const latest = pairs
-        .map((n) => concentrationOf(n, latestValue(view, n).value))
-        .filter(Number.isFinite);
-      if (latest.length) {
-        const mean = latest.reduce((a, b) => a + b, 0) / latest.length;
-        tile(`${CAL_CONFIG.analyte}, mean`, mean.toFixed(unit.decimals), unit.label,
-          `${latest.length} of ${pairs.length} pairs calibrated`);
-      } else {
-        tile(CAL_CONFIG.analyte, "—", "", "No pairs calibrated");
-      }
-    } else {
-      tile("Electrode pairs", String(pairs.length), "", (() => { const n = new Set(pairs.map((x) => x.split("_")[0])).size; return `${n} ${n === 1 ? "stake" : "stakes"}`; })());
+    const unit = UNITS[state.unitKey];
+    const latest = view.names.filter((n) => PAIR_COLUMN.test(n))
+      .map((n) => concentrationOf(n, latestValue(view, n).value))
+      .filter(Number.isFinite);
+    const mean = latest.reduce((a, b) => a + b, 0) / latest.length;
+    tile(CAL_CONFIG.analyte, latest.length ? mean.toFixed(unit.decimals) : "—", latest.length ? unit.label : "",
+      latest.length ? `mean of ${latest.length} pairs` : "Not calibrated");
+
+    if (view.values.vbat) {
+      const { value } = latestValue(view, "vbat");
+      tile("Battery", Number.isFinite(value) ? value.toFixed(2) : "—", Number.isFinite(value) ? "V" : "");
     }
-
-    [["vbat", "Battery", "V"], ["temp1", "Temperature, probe 1", "°C"], ["temp2", "Temperature, probe 2", "°C"]]
-      .forEach(([name, label, unit]) => {
-        if (!view.values[name]) return;
-        const { value } = latestValue(view, name);
-        tile(label, Number.isFinite(value) ? value.toFixed(2) : "—", Number.isFinite(value) ? unit : "");
-      });
-  }
-
-  function renderTable(view) {
-    const body = $("latest-table").querySelector("tbody");
-    body.replaceChildren();
-    const row = (label, text) => {
-      const tr = el("tr");
-      tr.append(el("td", null, label), el("td", "num", text));
-      body.append(tr);
-    };
-    const fmt = (value, decimals, unit) => (Number.isFinite(value) ? `${value.toFixed(decimals)} ${unit}` : "—");
-
-    [["temp1", "Temperature, probe 1", 2, "°C", 1], ["temp2", "Temperature, probe 2", 2, "°C", 1], ["vbat", "Battery", 2, "V", 1]]
-      .forEach(([name, label, decimals, unit, scale]) => {
-        if (view.values[name]) row(label, fmt(latestValue(view, name).value * scale, decimals, unit));
-      });
-    pairSpecs(view.names).forEach((spec) => {
-      spec.series.forEach((s) => row(`${spec.title} · ${s.label}`, fmt(s.transform(latestValue(view, s.key).value), spec.decimals, spec.unit)));
-    });
   }
 
   // Rows are rebuilt only when the set of pairs changes, so refreshes don't
@@ -758,7 +704,7 @@
     const pairs = pairSpecs(view.names).flatMap((spec) =>
       spec.series.map((s) => ({ key: s.key, label: `${spec.title} · ISE ${PAIR_COLUMN.exec(s.key)[3]}` })));
 
-    $("cal-conc-head").textContent = `Latest ${CAL_CONFIG.analyte.toLowerCase()}`;
+    $("cal-conc-head").textContent = CAL_CONFIG.analyte;
 
     const sig = pairs.map((p) => p.key).join(",");
     if (body.dataset.sig !== sig) {
@@ -800,7 +746,6 @@
   function setCalibration(name, field, raw) {
     state.cal[name] = Object.assign({ e0: NaN, slope: NaN }, state.cal[name], { [field]: toNumber(raw.trim()) });
     saveCalibration();
-    $("cal-msg").textContent = "Saved in this browser.";
     renderAll();
   }
 
@@ -811,7 +756,7 @@
     pre.hidden = false;
     try {
       await navigator.clipboard.writeText(snippet);
-      $("cal-msg").textContent = "Copied. Replace the calibration block in docs/config.js with it.";
+      $("cal-msg").textContent = "Copied. Paste into docs/config.js to publish.";
     } catch (e) {
       $("cal-msg").textContent = "Copy the block below into docs/config.js.";
     }
@@ -852,18 +797,12 @@
     state.view = sliceFrom(state.data, state.domain[0]);
 
     const concentration = state.mode === "concentration";
-    $("pair-heading").textContent = concentration ? `${CAL_CONFIG.analyte} concentration` : "Electrode potentials";
-    $("pair-note").textContent = concentration
-      ? "Each panel is one reference electrode paired with its stake's ion-selective electrodes (ISE), converted to concentration with each pair's calibration below. Panels have independent y-axes. Hover, or focus a chart and use the arrow keys, to read values."
-      : "Each panel is one reference electrode paired with its stake's ion-selective electrodes (ISE). Panels have independent y-axes. Hover, or focus a chart and use the arrow keys, to read values.";
+    $("pair-heading").textContent = concentration ? CAL_CONFIG.analyte : "Potential";
 
     renderTiles(state.view);
-    renderTable(state.view);
     renderCalibration(state.view);
 
-    const pairCharts = syncCharts($("pair-charts"), pairSpecs(state.view.names));
-    const envCharts = syncCharts($("env-charts"), envSpecs(state.view.names));
-    state.charts = [...pairCharts, ...envCharts];
+    state.charts = syncCharts($("pair-charts"), pairSpecs(state.view.names));
     state.charts.forEach((chart) => {
       chart.data = { times: state.view.times, columns: chart.spec.series.map((s) => state.view.values[s.key]) };
       chart.domain = state.domain;

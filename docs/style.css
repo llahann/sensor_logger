@@ -201,16 +201,12 @@ h3 { font-size: 14px; margin: 0; font-weight: 600; }
 .tile-sub { color: var(--text-muted); font-size: 12px; }
 
 .section-note { margin: 0 0 14px; color: var(--text-secondary); font-size: 14px; max-width: 80ch; }
-.section-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; }
-.section-head h2 { margin-bottom: 12px; }
-.section-head .button { margin-bottom: 10px; }
 
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 420px), 1fr));
   gap: 16px;
 }
-#env-charts { margin-top: 14px; }
 
 .card-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; margin-bottom: 8px; }
 .card-sub { color: var(--text-muted); font-size: 12px; }
@@ -306,7 +302,10 @@ td input:focus-visible, select:focus-visible { outline: 2px solid var(--accent);
 }
 code { font-size: 0.92em; }
 
-.page-footer { margin-top: 40px; color: var(--text-muted); font-size: 13px; }
+.updated { margin-right: auto; }
+h2 { margin-bottom: 14px; }
+.cal { margin-top: 36px; }
+.cal summary { cursor: pointer; font-size: 18px; font-weight: 600; margin-bottom: 10px; }
 
 @media (max-width: 520px) {
   h1 { font-size: 22px; }
