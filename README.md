@@ -31,9 +31,9 @@ Networks with a login page (eduroam, guest WiFi) won't work; use a WPA2 password
 
 ### Nitrate calibration
 
-The page converts each pair's reading to concentration with E [mV] = E0 + S·log10(C / mM), where E is the raw logger value (the sheet value × 1000). Fit E0 and S from standards measured with this logger so any readout offset is absorbed into E0; nitrate slopes are negative (about −55 to −59 mV/decade).
+The page plots the average nitrate of the checked channels over the last 6 hours, converting each pair with E [mV] = E0 + S·log10(C / mM), where E is the raw logger value (the sheet value × 1000).
 
-Enter the values under **Calibration** on the page (saved per browser), then click **Copy as config.js** and paste the block into `docs/config.js` to publish them. Switch between **Potential** and **Nitrate** in the toolbar, or link directly with `?view=nitrate`.
+**Reset plot** clears the plot and sets every channel to S = −60 mV/decade with E0 chosen so its latest reading is 20 ppm NO₃⁻-N. Channels, E0 and slope can be changed under **Calibration** (saved per browser); fixed values can also go in `docs/config.js`.
 
 Until `dataUrl` is set the page shows simulated data. Add `?demo` to the page URL to show simulated data at any time.
 

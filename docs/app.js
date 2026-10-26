@@ -1,51 +1,48 @@
 // Smartstake live data page.
 // Fetches rows from the Apps Script web app (see google_apps_script/Code.gs),
-// or generates simulated rows in demo mode, and draws them as SVG line charts.
+// or generates simulated rows in demo mode, and plots the average nitrate of
+// the selected electrode pairs as one SVG line chart.
 "use strict";
 
 (() => {
   const CONFIG = Object.assign(
-    { dataUrl: "", refreshSeconds: 60, title: "Smartstake live data", defaultView: "potential" },
+    { dataUrl: "", refreshSeconds: 20, title: "Smartstake live data" },
     window.SMARTSTAKE_CONFIG
   );
-  const CAL_CONFIG = Object.assign({ analyte: "Nitrate", unit: "mM", pairs: {} }, CONFIG.calibration);
+  const CAL_CONFIG = Object.assign({ analyte: "Nitrate", unit: "ppm N", pairs: {} }, CONFIG.calibration);
 
-  const RANGES = [
-    { key: "6h", label: "6 h", hours: 6 },
-    { key: "24h", label: "24 h", hours: 24 },
-    { key: "3d", label: "3 d", hours: 72 },
-    { key: "7d", label: "7 d", hours: 168 },
-  ];
-  const CYCLE_SECONDS = 40;                // approximate logger cycle, used to size requests
-  const MAX_ROWS = 20000;                  // matches MAX_ROWS_PER_GET in Code.gs
+  const WINDOW_HOURS = 6;
+  const MIN_SPAN_MS = 15 * 60 * 1000;      // x-axis width right after a reset
+  const CYCLE_SECONDS = 20;                // approximate logger cycle, used to size requests
   const OFFLINE_AFTER_MS = 5 * 60 * 1000;  // no new row for this long = offline
   const PAIR_COLUMN = /^s(\d+)_re(\d+)_ise(\d+)$/;
   const SVG_NS = "http://www.w3.org/2000/svg";
   const HOUR = 3600 * 1000;
 
+  // Reset calibration: every pair reads AUTO_PPM_N ppm NO3-N at its latest
+  // reading, with a Nernstian slope for a monovalent anion.
+  const AUTO_SLOPE = -60;     // mV/decade
+  const AUTO_PPM_N = 20;
+
   // Concentration units, converted from mM
   const UNITS = {
+    "ppm N": { label: "ppm NO₃⁻-N", factor: 14.007, decimals: 1 },
+    "ppm NO3": { label: "ppm NO₃⁻", factor: 62.004, decimals: 1 },
     "mM": { label: "mM", factor: 1, decimals: 2 },
-    "mg/L NO3": { label: "mg/L NO₃⁻", factor: 62.004, decimals: 1 },
-    "mg/L N": { label: "mg/L NO₃⁻-N", factor: 14.007, decimals: 1 },
   };
 
   const params = new URLSearchParams(location.search);
   const DEMO = params.has("demo") || !CONFIG.dataUrl || CONFIG.dataUrl.includes("XXXXXXXX");
-  const CAL_KEY = DEMO ? "smartstake-calibration-demo" : "smartstake-calibration";
+  const KEY = (name) => `smartstake-${name}${DEMO ? "-demo" : ""}`;
 
   const state = {
-    rangeKey: readStored("smartstake-range", RANGES.map((r) => r.key), "24h"),
-    // ?view=potential or ?view=concentration (or the analyte name) overrides the stored choice
-    mode: params.has("view")
-      ? (params.get("view") === "potential" ? "potential" : "concentration")
-      : readStored("smartstake-mode", ["potential", "concentration"],
-        CONFIG.defaultView === "concentration" ? "concentration" : "potential"),
-    unitKey: readStored("smartstake-unit", Object.keys(UNITS), UNITS[CAL_CONFIG.unit] ? CAL_CONFIG.unit : "mM"),
-    cal: loadCalibration(),   // { pairName: { e0, slope } } in mV
+    unitKey: readStored("smartstake-unit", Object.keys(UNITS), UNITS[CAL_CONFIG.unit] ? CAL_CONFIG.unit : "ppm N"),
+    cal: loadCalibration(),                        // { pairName: { e0, slope } } in mV
+    excluded: new Set(readJson(KEY("excluded"), [])),
+    resetAt: Number(readJson(KEY("reset"), 0)) || 0,
     data: null,      // full fetched table
-    view: null,      // table sliced to the selected range
-    domain: null,    // [start, end] ms shared by every chart
+    view: null,      // table sliced to the plotted window
+    domain: null,    // [start, end] ms
     error: null,
     loading: false,
     charts: [],
@@ -71,8 +68,8 @@
   }
 
   const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
-  const currentRange = () => RANGES.find((r) => r.key === state.rangeKey);
 
+  // Declarations (not const arrows) because state is initialized above with them
   function readStored(key, allowed, fallback) {
     try {
       const value = localStorage.getItem(key);
@@ -81,8 +78,17 @@
     return fallback;
   }
 
+  function readJson(key, fallback) {
+    try {
+      const value = JSON.parse(localStorage.getItem(key));
+      return value === null ? fallback : value;
+    } catch (e) {
+      return fallback;
+    }
+  }
+
   function store(key, value) {
-    try { localStorage.setItem(key, value); } catch (e) { /* ignore */ }
+    try { localStorage.setItem(key, typeof value === "string" ? value : JSON.stringify(value)); } catch (e) { /* ignore */ }
   }
 
   // First index with times[i] >= t
@@ -123,7 +129,7 @@
   async function fetchData(hours) {
     if (DEMO) return makeDemoData(hours);
 
-    const n = Math.min(MAX_ROWS, Math.ceil((hours * 3600 / CYCLE_SECONDS) * 1.3));
+    const n = Math.ceil((hours * 3600 / CYCLE_SECONDS) * 1.3);
     const res = await fetch(`${CONFIG.dataUrl}?n=${n}`, { cache: "no-store" });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json();
@@ -143,16 +149,15 @@
     names.forEach((name) => (values[name] = new Float64Array(kept.length)));
     kept.forEach((row, i) => {
       times[i] = Date.parse(row[0]);
-      names.forEach((name, j) => (values[name][i] = cleanValue(name, row[j + 1])));
+      names.forEach((name, j) => (values[name][i] = cleanValue(row[j + 1])));
     });
     return { names, times, values };
   }
 
-  function cleanValue(name, raw) {
+  function cleanValue(raw) {
     if (raw === "" || raw === null || raw === undefined) return NaN;
     const v = Number(raw);
-    if (!Number.isFinite(v)) return NaN;
-    return v;
+    return Number.isFinite(v) ? v : NaN;
   }
 
   function sliceFrom(data, start) {
@@ -160,36 +165,6 @@
     const values = {};
     data.names.forEach((name) => (values[name] = data.values[name].subarray(i)));
     return { names: data.names, times: data.times.subarray(i), values };
-  }
-
-  // Nitrate electrode pairs used by the simulated data
-  function demoPairs() {
-    const pairs = [];
-    const stakes = [
-      { stake: 1, res: [1, 2], ises: [1, 2, 3], base: 210 },
-      { stake: 2, res: [3, 4], ises: [4, 5, 6], base: 260 },
-    ];
-    stakes.forEach(({ stake, res, ises, base }) => {
-      res.forEach((re, ri) => {
-        ises.forEach((ise, ii) => {
-          pairs.push({
-            name: `s${stake}_re${re}_ise${ise}`,
-            e0: base + 22 * ii + 9 * ri,
-            slope: -(54 + 2 * ii),              // mV/decade
-            drift: (ii - 1) * 1.2 + 0.6 * ri,   // mV/day
-            seed: stake * 100 + re * 10 + ise,
-          });
-        });
-      });
-    });
-    return pairs;
-  }
-
-  // Calibration of the simulated pairs as if taken half a day ago, so drift shows
-  function demoCalibration() {
-    const cal = {};
-    demoPairs().forEach((p) => (cal[p.name] = { e0: +(p.e0 + p.drift * 6.5).toFixed(1), slope: p.slope }));
-    return cal;
   }
 
   // Simulated rows with the logger's column layout: nitrate on every pair,
@@ -200,7 +175,14 @@
     const end = Math.floor(Date.now() / stepMs) * stepMs;
     const count = Math.floor((hours * HOUR) / stepMs);
     const epoch = end - 7 * 24 * HOUR;
-    const pairs = demoPairs();
+    const pairs = [];
+    [1, 2].forEach((re, ri) => [1, 2, 3].forEach((ise, ii) => pairs.push({
+      name: `s1_re${re}_ise${ise}`,
+      e0: 210 + 22 * ii + 9 * ri,
+      slope: -(54 + 2 * ii),              // mV/decade
+      drift: (ii - 1) * 1.2 + 0.6 * ri,   // mV/day
+      seed: 100 + re * 10 + ise,
+    })));
 
     const names = ["vbat", ...pairs.map((p) => p.name)];
     const times = new Float64Array(count);
@@ -220,18 +202,15 @@
       const hod = d.getHours() + d.getMinutes() / 60;
       const days = (t - epoch) / (24 * HOUR);
       const dosePhase = (days / 2) % 1;
-
       const diurnal = 0.7 * Math.sin((2 * Math.PI * (hod - 9)) / 24);   // mV
       const sun = Math.max(0, Math.sin((2 * Math.PI * (hod - 6)) / 24));
-      const vbat = 3.82 + 0.22 * sun + 0.004 * noise(k, 3);
 
       times[i] = t;
-      values.vbat[i] = vbat;
+      values.vbat[i] = 3.82 + 0.22 * sun + 0.004 * noise(k, 3);
 
       const nitrate = 6 - 2.2 * dosePhase;   // mM
       pairs.forEach((p) => {
-        const mv = p.e0 + p.slope * Math.log10(nitrate) + diurnal
-          + p.drift * days + 0.35 * noise(k, p.seed);
+        const mv = p.e0 + p.slope * Math.log10(nitrate) + diurnal + p.drift * days + 0.35 * noise(k, p.seed);
         values[p.name][i] = mv / 1000;
       });
     }
@@ -242,7 +221,6 @@
   // Calibration
   // -------------------------------------------------------------------------
 
-  // Declarations (not const arrows) because state is initialized above with loadCalibration()
   function toNumber(v) {
     return v === null || v === undefined || v === "" ? NaN : Number(v);
   }
@@ -251,20 +229,29 @@
     return !!c && Number.isFinite(c.e0) && Number.isFinite(c.slope) && c.slope !== 0;
   }
 
-  // config.js values, simulated-data defaults in demo mode, then this browser's edits
+  // config.js values, then this browser's edits and resets
   function loadCalibration() {
     const cal = {};
     const add = (pairs) => Object.entries(pairs || {}).forEach(([name, c]) => {
       cal[name] = { e0: toNumber(c && c.e0), slope: toNumber(c && c.slope) };
     });
-    if (DEMO) add(demoCalibration());
     add(CAL_CONFIG.pairs);
-    try { add(JSON.parse(localStorage.getItem(CAL_KEY) || "{}")); } catch (e) { /* ignore */ }
+    add(readJson(KEY("calibration"), {}));
     return cal;
   }
 
-  function saveCalibration() {
-    try { localStorage.setItem(CAL_KEY, JSON.stringify(state.cal)); } catch (e) { /* ignore */ }
+  const saveCalibration = () => store(KEY("calibration"), state.cal);
+
+  // Sets E0 so the pair's latest reading maps to AUTO_PPM_N ppm NO3-N
+  function autoCalibrate(data, names) {
+    const mM = AUTO_PPM_N / UNITS["ppm N"].factor;
+    names.forEach((name) => {
+      const { value } = latestValue(data, name);
+      if (!Number.isFinite(value)) return;
+      state.cal[name] = { e0: +(value * 1000 - AUTO_SLOPE * Math.log10(mM)).toFixed(2), slope: AUTO_SLOPE };
+    });
+    saveCalibration();
+    $("cal-table").querySelector("tbody").dataset.sig = "";   // reload the inputs
   }
 
   // Raw reading in volts -> concentration in the selected unit, NaN if uncalibrated
@@ -274,84 +261,35 @@
     return 10 ** ((volts * 1000 - c.e0) / c.slope) * UNITS[state.unitKey].factor;
   }
 
-  function pairTransform(name) {
-    if (state.mode === "concentration") return (v) => concentrationOf(name, v);
-    return (v) => v * 1000;
+  const pairNames = (names) => names.filter((n) => PAIR_COLUMN.test(n)).sort();
+  const activePairs = (names) => pairNames(names).filter((n) => !state.excluded.has(n) && isCalibrated(state.cal[n]));
+
+  function pairLabel(name, names) {
+    const [stake, re, ise] = PAIR_COLUMN.exec(name).slice(1);
+    const multiStake = new Set(pairNames(names).map((n) => PAIR_COLUMN.exec(n)[1])).size > 1;
+    return `${multiStake ? `Stake ${stake} · ` : ""}RE ${re} · ISE ${ise}`;
   }
 
-  function calibrationSnippet() {
-    const pairs = Object.keys(state.cal).sort()
-      .filter((name) => isCalibrated(state.cal[name]))
-      .map((name) => `      ${name}: { e0: ${state.cal[name].e0}, slope: ${state.cal[name].slope} },`);
-    return [
-      "  calibration: {",
-      `    analyte: ${JSON.stringify(CAL_CONFIG.analyte)},`,
-      `    unit: ${JSON.stringify(state.unitKey)},`,
-      "    pairs: {",
-      ...pairs,
-      "    },",
-      "  },",
-    ].join("\n");
-  }
-
-  // -------------------------------------------------------------------------
-  // Chart specs
-  // -------------------------------------------------------------------------
-
-  // One panel per (stake, RE). ISE colors are fixed per stake so the same
-  // electrode keeps its color across that stake's panels.
-  function pairSpecs(names) {
-    const concentration = state.mode === "concentration";
-    const unit = UNITS[state.unitKey];
-    const stakes = new Map();
-    names.forEach((name) => {
-      const m = PAIR_COLUMN.exec(name);
-      if (!m) return;
-      const [stake, re, ise] = m.slice(1).map(Number);
-      if (!stakes.has(stake)) stakes.set(stake, { ises: new Set(), panels: new Map() });
-      const s = stakes.get(stake);
-      s.ises.add(ise);
-      if (!s.panels.has(re)) s.panels.set(re, []);
-      s.panels.get(re).push({ ise, name });
-    });
-
-    const specs = [];
-    [...stakes.keys()].sort((a, b) => a - b).forEach((stake) => {
-      const s = stakes.get(stake);
-      const iseOrder = [...s.ises].sort((a, b) => a - b);
-      [...s.panels.keys()].sort((a, b) => a - b).forEach((re) => {
-        const series = s.panels.get(re)
-          .sort((a, b) => a.ise - b.ise)
-          .map((p) => {
-            const uncalibrated = concentration && !isCalibrated(state.cal[p.name]);
-            return {
-              key: p.name,
-              label: uncalibrated ? `ISE ${p.ise} · uncalibrated` : `ISE ${p.ise}`,
-              slot: Math.min(iseOrder.indexOf(p.ise), 7) + 1,
-              transform: pairTransform(p.name),
-            };
-          });
-        specs.push({
-          id: `s${stake}_re${re}`,
-          title: `Smartstake ${stake} · RE ${re}`,
-          subtitle: concentration ? `${CAL_CONFIG.analyte}, ${unit.label}` : "Potential vs. RE, mV",
-          unit: concentration ? unit.label : "mV",
-          decimals: concentration ? unit.decimals : 1,
-          emptyText: concentration && series.every((x) => x.label.endsWith("uncalibrated"))
-            ? "Not calibrated"
-            : "",
-          series,
-        });
+  // Mean concentration of the active pairs at every row
+  function averageColumn(view) {
+    const pairs = activePairs(view.names);
+    const out = new Float64Array(view.times.length);
+    for (let i = 0; i < out.length; i++) {
+      let sum = 0, count = 0;
+      pairs.forEach((name) => {
+        const c = concentrationOf(name, view.values[name][i]);
+        if (Number.isFinite(c)) { sum += c; count++; }
       });
-    });
-    return specs;
+      out[i] = count ? sum / count : NaN;
+    }
+    return out;
   }
 
   // -------------------------------------------------------------------------
   // Line chart
   // -------------------------------------------------------------------------
 
-  const TIME_STEPS = [15, 30, 60, 120, 180, 360, 720, 1440, 2880].map((min) => min * 60000);
+  const TIME_STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 180, 360].map((min) => min * 60000);
 
   function niceTicks(lo, hi, count) {
     const raw = (hi - lo) / count;
@@ -373,12 +311,8 @@
     return { ticks, step };
   }
 
-  function timeLabel(t, step) {
-    const d = new Date(t);
-    if (step >= 24 * HOUR || (d.getHours() === 0 && d.getMinutes() === 0)) {
-      return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-    }
-    return d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  function timeLabel(t) {
+    return new Date(t).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
   }
 
   // Indices to draw: every k-th point so a path has at most ~maxPoints vertices
@@ -427,11 +361,11 @@
     const svg = svgEl("svg", {
       role: "img",
       tabindex: "0",
-      "aria-label": `${spec.title}, line chart of ${spec.series.map((s) => s.label).join(", ")}. Use arrow keys to read values.`,
+      "aria-label": `${spec.title}, line chart. Use arrow keys to read values.`,
     });
     const tooltip = el("div", "tooltip");
     tooltip.hidden = true;
-    const empty = el("p", "empty", "No readings in this time range");
+    const empty = el("p", "empty");
     empty.hidden = true;
     plot.append(svg, tooltip, empty);
     card.append(head, plot);
@@ -446,7 +380,7 @@
     const width = Math.floor(plot.clientWidth);
     if (!width || !data) return;
 
-    const height = 200;
+    const height = 360;
     const m = { top: 10, right: 12, bottom: 26, left: 56 };
     const iw = Math.max(10, width - m.left - m.right);
     const ih = height - m.top - m.bottom;
@@ -456,7 +390,7 @@
     const t = idx.map((i) => data.times[i]);
     const ys = spec.series.map((s, k) => {
       const col = data.columns[k];
-      return idx.map((i) => (col ? s.transform(col[i]) : NaN));
+      return idx.map((i) => (col ? col[i] : NaN));
     });
 
     let lo = Infinity, hi = -Infinity;
@@ -465,11 +399,11 @@
     }));
     const hasData = Number.isFinite(lo);
     chart.empty.hidden = hasData;
-    chart.empty.textContent = spec.emptyText || "No readings in this time range";
+    chart.empty.textContent = spec.emptyText;
     if (!hasData) { lo = 0; hi = 1; }
     if (hi - lo < 1e-9) { lo -= 1; hi += 1; }
 
-    const { ticks: yTicks, decimals: yDecimals } = niceTicks(lo, hi, Math.max(3, Math.floor(ih / 40)));
+    const { ticks: yTicks, decimals: yDecimals } = niceTicks(lo, hi, Math.max(3, Math.floor(ih / 50)));
     const yLo = yTicks[0], yHi = yTicks[yTicks.length - 1];
     const sx = (v) => m.left + ((v - x0) / (x1 - x0)) * iw;
     const sy = (v) => m.top + (1 - (v - yLo) / (yHi - yLo)) * ih;
@@ -490,10 +424,10 @@
     const baseY = m.top + ih + 0.5;
     axes.append(svgEl("line", { class: "axis-line", x1: m.left, x2: m.left + iw, y1: baseY, y2: baseY }));
 
-    const { ticks: xTicks, step: xStep } = timeTicks(x0, x1, Math.max(2, Math.floor(iw / 90)));
+    const { ticks: xTicks } = timeTicks(x0, x1, Math.max(2, Math.floor(iw / 90)));
     xTicks.forEach((v) => {
       const label = svgEl("text", { class: "tick", x: sx(v), y: height - 6, "text-anchor": "middle" });
-      label.textContent = timeLabel(v, xStep);
+      label.textContent = timeLabel(v);
       axes.append(label);
     });
     svg.append(axes);
@@ -511,6 +445,12 @@
         d: linePath(t, y, sx, sy, gapMs),
         style: `stroke: var(--series-${spec.series[k].slot})`,
       }));
+    });
+    // Mark the latest point, which is also the only one right after a reset
+    ys.forEach((y, k) => {
+      let i = y.length - 1;
+      while (i >= 0 && !Number.isFinite(y[i])) i--;
+      if (i >= 0) lines.append(svgEl("circle", { class: "dot", r: 4, cx: sx(t[i]), cy: sy(y[i]), style: `fill: var(--series-${spec.series[k].slot})` }));
     });
     svg.append(lines);
 
@@ -624,12 +564,15 @@
     return { value: NaN, time: NaN };
   }
 
+  function lastTime(data) {
+    return data && data.times.length ? data.times[data.times.length - 1] : NaN;
+  }
+
   function renderStatus() {
     const status = $("status");
     const icon = $("status-icon");
     const text = $("status-text");
-    const times = state.data ? state.data.times : [];
-    const last = times.length ? times[times.length - 1] : NaN;
+    const last = lastTime(state.data);
 
     let kind, label, glyph;
     if (state.error && !state.data) {
@@ -661,85 +604,90 @@
     $("updated").textContent = Number.isFinite(last) ? `Last reading ${fullTime(last)}` : "";
   }
 
-  function renderTiles(view) {
+  function renderTiles(view, average) {
     const tiles = $("tiles");
     tiles.replaceChildren();
-    const lastTime = view.times.length ? view.times[view.times.length - 1] : NaN;
+    const unit = UNITS[state.unitKey];
+    const last = lastTime(state.data);
 
-    const tile = (label, value, unit, sub) => {
+    const tile = (label, value, unitLabel, sub) => {
       const card = el("div", "card");
       const val = el("div", "tile-value", value);
-      if (unit) val.append(el("span", "tile-unit", unit));
+      if (unitLabel) val.append(el("span", "tile-unit", unitLabel));
       card.append(el("div", "tile-label", label), val);
       if (sub) card.append(el("div", "tile-sub", sub));
       tiles.append(card);
     };
 
-    tile(
-      "Last reading",
-      Number.isFinite(lastTime) ? ago(Date.now() - lastTime) : "—",
-      "",
-      Number.isFinite(lastTime) ? fullTime(lastTime) : "No data in range"
-    );
-    const unit = UNITS[state.unitKey];
-    const latest = view.names.filter((n) => PAIR_COLUMN.test(n))
-      .map((n) => concentrationOf(n, latestValue(view, n).value))
-      .filter(Number.isFinite);
-    const mean = latest.reduce((a, b) => a + b, 0) / latest.length;
-    tile(CAL_CONFIG.analyte, latest.length ? mean.toFixed(unit.decimals) : "—", latest.length ? unit.label : "",
-      latest.length ? `mean of ${latest.length} pairs` : "Not calibrated");
-
-    if (view.values.vbat) {
-      const { value } = latestValue(view, "vbat");
+    const latest = average.length ? average[average.length - 1] : NaN;
+    const n = activePairs(view.names).length;
+    tile(CAL_CONFIG.analyte, Number.isFinite(latest) ? latest.toFixed(unit.decimals) : "—",
+      Number.isFinite(latest) ? unit.label : "", `average of ${n} ${n === 1 ? "channel" : "channels"}`);
+    tile("Last reading", Number.isFinite(last) ? ago(Date.now() - last) : "—", "",
+      Number.isFinite(last) ? fullTime(last) : "No data yet");
+    if (state.data.values.vbat) {
+      const { value } = latestValue(state.data, "vbat");
       tile("Battery", Number.isFinite(value) ? value.toFixed(2) : "—", Number.isFinite(value) ? "V" : "");
     }
   }
 
-  // Rows are rebuilt only when the set of pairs changes, so refreshes don't
-  // wipe a value being typed.
-  function renderCalibration(view) {
-    const table = $("cal-table");
-    const body = table.querySelector("tbody");
+  // Rows are rebuilt only when the set of pairs changes or after a reset, so
+  // refreshes don't wipe a value being typed.
+  function renderCalibration(data) {
+    const body = $("cal-table").querySelector("tbody");
     const unit = UNITS[state.unitKey];
-    const pairs = pairSpecs(view.names).flatMap((spec) =>
-      spec.series.map((s) => ({ key: s.key, label: `${spec.title} · ISE ${PAIR_COLUMN.exec(s.key)[3]}` })));
+    const pairs = pairNames(data.names);
 
-    $("cal-conc-head").textContent = CAL_CONFIG.analyte;
+    $("cal-conc-head").textContent = `${CAL_CONFIG.analyte}, ${unit.label}`;
 
-    const sig = pairs.map((p) => p.key).join(",");
+    const sig = pairs.join(",");
     if (body.dataset.sig !== sig) {
       body.dataset.sig = sig;
       body.replaceChildren();
       body.cells = {};
-      pairs.forEach((p) => {
+      pairs.forEach((name) => {
+        const label = pairLabel(name, data.names);
         const tr = el("tr");
-        const inputs = [["e0", "E0, mV"], ["slope", "slope, mV per decade"]].map(([field, name]) => {
+
+        const use = el("td");
+        const box = el("input");
+        box.type = "checkbox";
+        box.checked = !state.excluded.has(name);
+        box.setAttribute("aria-label", `Include ${label} in the average`);
+        box.addEventListener("change", () => {
+          if (box.checked) state.excluded.delete(name); else state.excluded.add(name);
+          store(KEY("excluded"), [...state.excluded]);
+          renderAll();
+        });
+        use.append(box);
+
+        const inputs = [["e0", "E0, mV"], ["slope", "slope, mV per decade"]].map(([field, fieldName]) => {
           const td = el("td", "num");
           const input = el("input");
           input.type = "number";
           input.step = "any";
           input.inputMode = "decimal";
-          input.setAttribute("aria-label", `${p.label} ${name}`);
-          const c = state.cal[p.key];
+          input.setAttribute("aria-label", `${label} ${fieldName}`);
+          const c = state.cal[name];
           if (c && Number.isFinite(c[field])) input.value = c[field];
-          input.addEventListener("change", () => setCalibration(p.key, field, input.value));
+          input.addEventListener("change", () => setCalibration(name, field, input.value));
           td.append(input);
           return td;
         });
         const mv = el("td", "num");
         const conc = el("td", "num");
-        tr.append(el("td", null, p.label), ...inputs, mv, conc);
+        tr.append(use, el("td", null, label), ...inputs, mv, conc);
         body.append(tr);
-        body.cells[p.key] = { mv, conc };
+        body.cells[name] = { mv, conc };
       });
     }
 
-    pairs.forEach((p) => {
-      const { value } = latestValue(view, p.key);
-      const cells = body.cells[p.key];
+    pairs.forEach((name) => {
+      const { value } = latestValue(data, name);
+      const cells = body.cells[name];
       cells.mv.textContent = Number.isFinite(value) ? `${(value * 1000).toFixed(1)} mV` : "—";
-      const c = concentrationOf(p.key, value);
-      cells.conc.textContent = Number.isFinite(c) ? `${c.toFixed(unit.decimals)} ${unit.label}` : "—";
+      const c = concentrationOf(name, value);
+      cells.conc.textContent = Number.isFinite(c) ? c.toFixed(unit.decimals) : "—";
     });
   }
 
@@ -749,24 +697,13 @@
     renderAll();
   }
 
-  async function copyCalibration() {
-    const snippet = calibrationSnippet();
-    const pre = $("cal-snippet");
-    pre.textContent = snippet;
-    pre.hidden = false;
-    try {
-      await navigator.clipboard.writeText(snippet);
-      $("cal-msg").textContent = "Copied. Paste into docs/config.js to publish.";
-    } catch (e) {
-      $("cal-msg").textContent = "Copy the block below into docs/config.js.";
-    }
-  }
-
-  function resetCalibration() {
-    try { localStorage.removeItem(CAL_KEY); } catch (e) { /* ignore */ }
-    state.cal = loadCalibration();
-    $("cal-table").querySelector("tbody").dataset.sig = "";   // reload the inputs
-    $("cal-msg").textContent = "Reset to config.js values.";
+  // Clears the plot and recalibrates every pair to AUTO_PPM_N at its latest reading
+  function resetPlot() {
+    if (!state.data) return;
+    const last = lastTime(state.data);
+    state.resetAt = Number.isFinite(last) ? last : Date.now();
+    store(KEY("reset"), state.resetAt);
+    autoCalibrate(state.data, pairNames(state.data.names));
     renderAll();
   }
 
@@ -781,7 +718,7 @@
     const blob = new Blob([lines.join("\n")], { type: "text/csv" });
     const a = el("a");
     a.href = URL.createObjectURL(blob);
-    a.download = `smartstake_${state.rangeKey}_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.download = `smartstake_${new Date().toISOString().slice(0, 10)}.csv`;
     document.body.append(a);
     a.click();
     a.remove();
@@ -792,19 +729,32 @@
     renderStatus();
     if (!state.data) return;
 
+    // Pairs never calibrated get the reset calibration from their latest reading
+    const missing = pairNames(state.data.names).filter((n) => !isCalibrated(state.cal[n]));
+    if (missing.length) autoCalibrate(state.data, missing);
+
     const now = Date.now();
-    state.domain = [now - currentRange().hours * HOUR, now];
-    state.view = sliceFrom(state.data, state.domain[0]);
+    const start = Math.max(now - WINDOW_HOURS * HOUR, state.resetAt);
+    state.domain = [start, Math.max(now, start + MIN_SPAN_MS)];
+    state.view = sliceFrom(state.data, start);
+    const average = averageColumn(state.view);
+    const unit = UNITS[state.unitKey];
+    const n = activePairs(state.view.names).length;
 
-    const concentration = state.mode === "concentration";
-    $("pair-heading").textContent = concentration ? CAL_CONFIG.analyte : "Potential";
+    renderTiles(state.view, average);
+    renderCalibration(state.data);
 
-    renderTiles(state.view);
-    renderCalibration(state.view);
-
-    state.charts = syncCharts($("pair-charts"), pairSpecs(state.view.names));
+    state.charts = syncCharts($("charts"), [{
+      id: "average",
+      title: `Average ${CAL_CONFIG.analyte.toLowerCase()}`,
+      subtitle: `${unit.label} · ${n} ${n === 1 ? "channel" : "channels"}`,
+      unit: unit.label,
+      decimals: unit.decimals,
+      emptyText: n ? "Waiting for readings" : "No channels selected",
+      series: [{ key: "average", label: "Average", slot: 1 }],
+    }]);
     state.charts.forEach((chart) => {
-      chart.data = { times: state.view.times, columns: chart.spec.series.map((s) => state.view.values[s.key]) };
+      chart.data = { times: state.view.times, columns: [average] };
       chart.domain = state.domain;
       renderChart(chart);
     });
@@ -815,7 +765,7 @@
     state.loading = true;
     document.body.classList.add("is-loading");
     try {
-      state.data = await fetchData(currentRange().hours);
+      state.data = await fetchData(WINDOW_HOURS);
       state.error = null;
     } catch (err) {
       state.error = err;
@@ -825,50 +775,10 @@
     renderAll();
   }
 
-  function renderRangeButtons() {
-    const group = $("range-buttons");
-    group.replaceChildren();
-    RANGES.forEach((r) => {
-      const b = el("button", null, r.label);
-      b.type = "button";
-      b.setAttribute("aria-pressed", String(r.key === state.rangeKey));
-      b.addEventListener("click", () => {
-        if (r.key === state.rangeKey) return;
-        state.rangeKey = r.key;
-        store("smartstake-range", r.key);
-        renderRangeButtons();
-        refresh();
-      });
-      group.append(b);
-    });
-  }
-
-  function renderModeControls() {
-    const group = $("mode-buttons");
-    group.replaceChildren();
-    [["potential", "Potential"], ["concentration", CAL_CONFIG.analyte]].forEach(([mode, label]) => {
-      const b = el("button", null, label);
-      b.type = "button";
-      b.setAttribute("aria-pressed", String(mode === state.mode));
-      b.addEventListener("click", () => {
-        if (mode === state.mode) return;
-        state.mode = mode;
-        store("smartstake-mode", mode);
-        renderModeControls();
-        renderAll();
-      });
-      group.append(b);
-    });
-    $("unit-picker").hidden = state.mode !== "concentration";
-  }
-
   function init() {
     $("title").textContent = CONFIG.title;
-    renderRangeButtons();
-    renderModeControls();
+    $("reset").addEventListener("click", resetPlot);
     $("download").addEventListener("click", downloadCsv);
-    $("cal-copy").addEventListener("click", copyCalibration);
-    $("cal-reset").addEventListener("click", resetCalibration);
 
     const select = $("unit-select");
     Object.entries(UNITS).forEach(([key, unit]) => {
@@ -890,7 +800,7 @@
     }).observe(document.querySelector(".wrap"));
 
     refresh();
-    setInterval(() => { if (!document.hidden) refresh(); }, Math.max(15, CONFIG.refreshSeconds) * 1000);
+    setInterval(() => { if (!document.hidden) refresh(); }, Math.max(10, CONFIG.refreshSeconds) * 1000);
   }
 
   init();
