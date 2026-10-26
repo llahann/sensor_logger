@@ -20,8 +20,8 @@
   const HOUR = 3600 * 1000;
 
   // Reset calibration: every pair reads AUTO_PPM_N ppm NO3-N at its latest
-  // reading, with a Nernstian slope for a monovalent anion.
-  const AUTO_SLOPE = -60;     // mV/decade
+  // reading, with this slope.
+  const AUTO_SLOPE = 60;      // mV/decade
   const AUTO_PPM_N = 20;
 
   // Concentration units, converted from mM

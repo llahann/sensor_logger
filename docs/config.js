@@ -6,7 +6,7 @@ window.SMARTSTAKE_CONFIG = {
   title: "Smartstake live data",
 
   // Optional fixed calibration per pair, E [mV] = e0 + slope * log10(C / mM).
-  // Pairs left out are set by Reset plot (-60 mV/decade, 20 ppm NO3-N now).
+  // Pairs left out are set by Reset plot (60 mV/decade, 20 ppm NO3-N now).
   calibration: {
     analyte: "Nitrate",
     unit: "ppm N",            // "ppm N", "ppm NO3" or "mM"
