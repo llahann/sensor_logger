@@ -268,6 +268,42 @@ String buildPayload(const float *values, size_t n) {
   return body;
 }
 
+// Tests each step of reaching Google separately, to tell a DNS failure, a
+// blocked port and a failed TLS handshake apart
+void diagnoseUpload() {
+  const char *host = "script.google.com";
+  Serial.print("#   gateway=");
+  Serial.print(WiFi.gatewayIP());
+  Serial.print(" dns=");
+  Serial.println(WiFi.dnsIP());
+
+  IPAddress addr;
+  if (!WiFi.hostByName(host, addr)) {
+    Serial.println("#   DNS lookup of script.google.com FAILED");
+    return;
+  }
+  Serial.print("#   DNS ok: ");
+  Serial.println(addr);
+
+  WiFiClient tcp;
+  bool tcpOk = tcp.connect(addr, 443, 5000);
+  tcp.stop();
+  Serial.println(tcpOk ? "#   TCP port 443 ok" : "#   TCP port 443 BLOCKED or unreachable");
+  if (!tcpOk) return;
+
+  WiFiClientSecure tls;
+  tls.setInsecure();
+  if (tls.connect(host, 443)) {
+    Serial.println("#   TLS handshake ok");
+  } else {
+    char err[100];
+    tls.lastError(err, sizeof(err));
+    Serial.print("#   TLS handshake FAILED: ");
+    Serial.println(err);
+  }
+  tls.stop();
+}
+
 // Posts one row to the Apps Script web app. Returns the HTTP status (negative on
 // connection errors).
 int uploadRow(const float *values, size_t n) {
@@ -368,6 +404,7 @@ void loop() {
     lastUploadMs = millis();
   } else {
     printWifiStatus();
+    if (failures == 0 && WiFi.status() == WL_CONNECTED) diagnoseUpload();
     if (++failures % WIFI_RESET_AFTER == 0) wifiRestart();
     if (millis() - lastUploadMs > REBOOT_AFTER_MS) {
       Serial.println("# nothing uploaded for 5 min, rebooting");
