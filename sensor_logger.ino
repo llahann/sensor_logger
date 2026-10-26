@@ -1,4 +1,4 @@
-// Smartstake data logger — ESP32 Feather V2
+// Smartstake data logger — ESP32 Feather
 // Reads ISE/RE pairs through two 8:1 analog muxes into an ADS1110 ADC,
 // plus two DS18B20 temperature probes and the battery voltage.
 // Output: one CSV row per cycle:
@@ -39,6 +39,8 @@ const uint8_t VBAT_PIN       = 35;       // behind a 1:2 divider on the Feather 
 // Google Sheets upload
 const uint32_t WIFI_TIMEOUT_MS = 15000;  // max wait for a (re)connect each cycle
 const uint16_t HTTP_TIMEOUT_MS = 15000;
+const uint8_t  WIFI_RESET_AFTER = 3;          // failed uploads in a row before a fresh WiFi connect
+const uint32_t REBOOT_AFTER_MS  = 5UL * 60 * 1000;  // reboot if nothing uploaded for this long
 
 // ---------------------------------------------------------------------------
 // Multiplexers
@@ -191,10 +193,40 @@ void buildColumns() {
 // Google Sheets upload
 // ---------------------------------------------------------------------------
 
+// Scans every channel and joins the strongest access point, not the first one found
 void wifiInit() {
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
+  WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
+  WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+}
+
+// Drops the current access point and connects from scratch, so after a move the
+// ESP32 picks a nearby access point instead of retrying the old one
+void wifiRestart() {
+  Serial.println("# reconnecting WiFi from scratch");
+  WiFi.disconnect();
+  delay(200);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+}
+
+// One line describing the link, printed when an upload fails
+void printWifiStatus() {
+  Serial.print("#   wifi status=");
+  Serial.print(WiFi.status());
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.print(" rssi=");
+    Serial.print(WiFi.RSSI());
+    Serial.print(" dBm ap=");
+    Serial.print(WiFi.BSSIDstr());
+    Serial.print(" ch=");
+    Serial.print(WiFi.channel());
+    Serial.print(" ip=");
+    Serial.print(WiFi.localIP());
+  }
+  Serial.print(" free_heap=");
+  Serial.println(ESP.getFreeHeap());
 }
 
 // Waits up to WIFI_TIMEOUT_MS for a connection, kicking a reconnect if it dropped.
@@ -309,13 +341,38 @@ void loop() {
   printCsvRow(values, n);
 
   // Apps Script answers a successful POST with a 302 redirect to its response
+  static uint32_t lastUploadMs = 0;
+  static uint8_t failures = 0;
+  bool ok = false;
   if (!wifiReady()) {
     Serial.println("# upload skipped: no WiFi");
   } else {
     int code = uploadRow(values, n);
-    if (code != 200 && code != 302) {
+    ok = code == 200 || code == 302;
+    if (!ok) {
       Serial.print("# upload failed: HTTP ");
-      Serial.println(code);
+      Serial.print(code);
+      Serial.print(" (");
+      Serial.print(HTTPClient::errorToString(code));
+      Serial.println(")");
+    }
+  }
+
+  if (ok) {
+    if (failures) {
+      Serial.print("# upload ok again after ");
+      Serial.print(failures);
+      Serial.println(" failures");
+    }
+    failures = 0;
+    lastUploadMs = millis();
+  } else {
+    printWifiStatus();
+    if (++failures % WIFI_RESET_AFTER == 0) wifiRestart();
+    if (millis() - lastUploadMs > REBOOT_AFTER_MS) {
+      Serial.println("# nothing uploaded for 5 min, rebooting");
+      delay(100);
+      ESP.restart();
     }
   }
 
