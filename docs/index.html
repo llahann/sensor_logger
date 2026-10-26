@@ -8,9 +8,9 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap">
-  <link rel="stylesheet" href="style.css?v=6">
-  <script src="config.js?v=6"></script>
-  <script src="app.js?v=6" defer></script>
+  <link rel="stylesheet" href="style.css?v=8">
+  <script src="config.js?v=8"></script>
+  <script src="app.js?v=8" defer></script>
 </head>
 <body>
   <header class="hero">
@@ -31,12 +31,6 @@
       </nav>
 
       <div class="hero-grid">
-        <div>
-          <p class="eyebrow">Live soil nitrate</p>
-          <h1>Real-time nitrate, straight from the field.</h1>
-          <p class="lede">Low-cost printed sensors in the soil, reporting every 20 seconds.</p>
-        </div>
-
         <div class="reading" aria-live="polite">
           <div class="reading-label"><span class="pulse-dot" aria-hidden="true"></span>Nitrate now</div>
           <div class="reading-value"><span id="hero-value">—</span><span class="reading-unit" id="hero-unit"></span></div>
@@ -72,25 +66,25 @@
     <section class="pipeline" aria-label="How it works">
       <div class="step">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12" /><path d="M8 15h8l-1 6H9l-1-6Z" /><path d="M4 21h16" /></svg>
-        <div><strong>Printed sensors</strong><span>Nitrate electrodes in the soil</span></div>
+        <div><strong>Printed sensors</strong></div>
       </div>
       <div class="step">
         <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" /><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4" /></svg>
-        <div><strong>Field logger</strong><span>16-bit readout, battery powered</span></div>
+        <div><strong>Field logger</strong></div>
       </div>
       <div class="step">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 18a5 5 0 0 1-.6-10A6 6 0 0 1 18 9a4.5 4.5 0 0 1-.5 9H7Z" /></svg>
-        <div><strong>Cloud</strong><span>Wi-Fi upload each cycle</span></div>
+        <div><strong>Cloud</strong></div>
       </div>
       <div class="step">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 20h18" /><path d="M5 16l4-5 4 3 6-8" /></svg>
-        <div><strong>Live dashboard</strong><span>Anyone, anywhere</span></div>
+        <div><strong>Live dashboard</strong></div>
       </div>
     </section>
 
     <details class="cal">
       <summary>Calibration</summary>
-      <p class="section-note">E = E<sub>0</sub> + S·log<sub>10</sub>(C / mM), E in logger mV. Reset plot sets every channel to 60 mV/decade and 20 ppm NO₃⁻-N at its latest reading. Checked channels are averaged.</p>
+      <p class="section-note">E = E<sub>0</sub> + S·log<sub>10</sub>(C / mM), E in logger mV. Reset plot sets every channel to 60 mV/decade and 20 ppm NO₃⁻-N at its latest reading.</p>
       <div class="card table-card">
         <table id="cal-table">
           <thead>

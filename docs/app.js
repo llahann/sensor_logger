@@ -631,8 +631,6 @@
     const unit = UNITS[state.unitKey];
     const finite = [...average].filter(Number.isFinite);
     const latest = finite.length ? finite[finite.length - 1] : NaN;
-    const n = activePairs(view.names).length;
-
     animateNumber($("hero-value"), latest, unit.decimals);
     $("hero-unit").textContent = Number.isFinite(latest) ? unit.label : "";
 
@@ -642,15 +640,13 @@
       ? `${delta > 0 ? "▲" : "▼"} ${Math.abs(delta).toFixed(unit.decimals)} ${unit.label} ${since}`
       : Number.isFinite(delta) ? `Steady ${since}` : "";
     const last = lastTime(state.data);
-    $("hero-sub").textContent = `Average of ${n} ${n === 1 ? "sensor" : "sensors"}` +
-      (Number.isFinite(last) ? ` · updated ${ago(Date.now() - last)}` : "");
+    $("hero-sub").textContent = Number.isFinite(last) ? `Updated ${ago(Date.now() - last)}` : "";
   }
 
   function renderStats(view, average) {
     const stats = $("stats");
     stats.replaceChildren();
     const last = lastTime(state.data);
-    const pairs = pairNames(view.names);
 
     const stat = (label, value, unitLabel, sub) => {
       const card = el("div", "card");
@@ -661,11 +657,6 @@
       stats.append(card);
     };
 
-    const count = (k) => new Set(pairs.map((n) => PAIR_COLUMN.exec(n)[k])).size;
-    stat("Sensors averaged", String(activePairs(view.names).length), `of ${pairs.length}`,
-      `${count(2)} reference × ${count(3)} nitrate electrodes`);
-    stat("Readings", [...average].filter(Number.isFinite).length.toLocaleString(), "",
-      state.resetAt && state.resetAt >= state.domain[0] ? "since reset" : "in the last 6 h");
     stat("Last reading", Number.isFinite(last) ? ago(Date.now() - last) : "—", "",
       Number.isFinite(last) ? fullTime(last) : "No data yet");
     if (state.data.values.vbat) {
@@ -696,7 +687,7 @@
         const box = el("input");
         box.type = "checkbox";
         box.checked = !state.excluded.has(name);
-        box.setAttribute("aria-label", `Include ${label} in the average`);
+        box.setAttribute("aria-label", `Include ${label}`);
         box.addEventListener("change", () => {
           if (box.checked) state.excluded.delete(name); else state.excluded.add(name);
           store(KEY("excluded"), [...state.excluded]);
@@ -787,16 +778,16 @@
     renderHero(state.view, average);
     renderStats(state.view, average);
     renderCalibration(state.data);
-    $("chart-sub").textContent = `Average of ${n} ${n === 1 ? "sensor" : "sensors"}, ${unit.label}`;
+    $("chart-sub").textContent = unit.label;
 
     state.charts = syncCharts($("charts"), [{
       id: "average",
-      title: `Average ${CAL_CONFIG.analyte.toLowerCase()}`,
+      title: CAL_CONFIG.analyte,
       subtitle: `${unit.label} · ${n} ${n === 1 ? "channel" : "channels"}`,
       unit: unit.label,
       decimals: unit.decimals,
       emptyText: n ? "Waiting for readings" : "No channels selected",
-      series: [{ key: "average", label: "Average", slot: 1 }],
+      series: [{ key: "average", label: CAL_CONFIG.analyte, slot: 1 }],
     }]);
     state.charts.forEach((chart) => {
       chart.data = { times: state.view.times, columns: [average] };

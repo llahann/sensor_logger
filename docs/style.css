@@ -107,7 +107,7 @@ h3 { font-size: 14px; margin: 0; font-weight: 600; }
     radial-gradient(900px 420px at 85% -10%, rgba(127, 224, 168, 0.22), transparent 60%),
     repeating-radial-gradient(circle at 88% 12%, transparent 0 26px, rgba(255, 255, 255, 0.045) 26px 27px),
     linear-gradient(160deg, var(--hero-from), var(--hero-to));
-  padding-bottom: 88px;
+  padding-bottom: 84px;
 }
 .nav {
   display: flex;
@@ -121,21 +121,9 @@ h3 { font-size: 14px; margin: 0; font-weight: 600; }
 
 .hero-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
-  gap: 32px;
-  align-items: center;
-  padding-top: 28px;
+  grid-template-columns: minmax(0, 560px);
+  padding-top: 12px;
 }
-.eyebrow {
-  margin: 0 0 12px;
-  color: var(--leaf);
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-.hero h1 { font-size: clamp(32px, 5vw, 52px); line-height: 1.05; margin: 0 0 16px; font-weight: 700; letter-spacing: -0.02em; max-width: 14ch; }
-.lede { margin: 0; color: var(--hero-muted); font-size: 17px; max-width: 42ch; }
 
 .reading {
   padding: 26px 28px;
@@ -376,7 +364,6 @@ td input:focus-visible, select:focus-visible { outline: 2px solid var(--accent);
 .page-footer { margin-top: 40px; color: var(--text-muted); font-size: 13px; }
 
 @media (max-width: 820px) {
-  .hero-grid { grid-template-columns: 1fr; gap: 24px; padding-top: 8px; }
   .pipeline { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .step + .step::before { display: none; }
 }
