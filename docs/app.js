@@ -338,25 +338,7 @@
   }
 
   function createChart(spec) {
-    const card = el("article", "card");
-    const head = el("div", "card-head");
-    const titles = el("div");
-    titles.append(el("h3", null, spec.title), el("div", "card-sub", spec.subtitle));
-    head.append(titles);
-
-    // A single series is named by the title; two or more get a legend
-    if (spec.series.length > 1) {
-      const legend = el("div", "legend");
-      spec.series.forEach((s) => {
-        const item = el("span", "legend-item");
-        const key = el("span", "key");
-        key.style.background = `var(--series-${s.slot})`;
-        item.append(key, document.createTextNode(s.label));
-        legend.append(item);
-      });
-      head.append(legend);
-    }
-
+    const card = el("div");
     const plot = el("div", "plot");
     const svg = svgEl("svg", {
       role: "img",
@@ -368,9 +350,9 @@
     const empty = el("p", "empty");
     empty.hidden = true;
     plot.append(svg, tooltip, empty);
-    card.append(head, plot);
+    card.append(plot);
 
-    const chart = { spec, card, plot, svg, tooltip, empty, data: null, domain: null, view: null, hoverIndex: -1 };
+    const chart = { spec, card, plot, svg, tooltip, empty, data: null, domain: null, view: null, hoverIndex: -1, drawn: false };
     attachHover(chart);
     return chart;
   }
@@ -380,7 +362,7 @@
     const width = Math.floor(plot.clientWidth);
     if (!width || !data) return;
 
-    const height = 360;
+    const height = Math.round(clamp(width * 0.42, 260, 380));
     const m = { top: 10, right: 12, bottom: 26, left: 56 };
     const iw = Math.max(10, width - m.left - m.right);
     const ih = height - m.top - m.bottom;
@@ -438,25 +420,51 @@
     dts.sort((a, b) => a - b);
     const gapMs = Math.max(5 * 60000, 6 * (dts[dts.length >> 1] || 0));
 
+    // Area under the line, fading to the baseline
+    const gradId = `area-${spec.id}`;
+    const defs = svgEl("defs");
+    const grad = svgEl("linearGradient", { id: gradId, x1: 0, y1: 0, x2: 0, y2: 1 });
+    grad.append(svgEl("stop", { offset: "0%", "stop-color": "var(--area-top)" }),
+      svgEl("stop", { offset: "100%", "stop-color": "var(--area-bottom)" }));
+    defs.append(grad);
+    svg.append(defs);
+
+    const animate = !chart.drawn && t.length > 1;
     const lines = svgEl("g");
-    ys.forEach((y, k) => {
-      lines.append(svgEl("path", {
-        class: "series-line",
-        d: linePath(t, y, sx, sy, gapMs),
-        style: `stroke: var(--series-${spec.series[k].slot})`,
-      }));
+    ys.forEach((y) => {
+      const d = linePath(t, y, sx, sy, gapMs);
+      // Close each drawn run down to the baseline for the fill
+      const area = d.split("M").filter(Boolean).map((run) => {
+        const pts = run.split("L");
+        const first = pts[0].split(",")[0], last = pts[pts.length - 1].split(",")[0];
+        return `M${first},${baseY}L${run}L${last},${baseY}Z`;
+      }).join("");
+      lines.append(svgEl("path", { class: `series-area${animate ? " fade-in" : ""}`, d: area, fill: `url(#${gradId})` }));
+      const path = svgEl("path", { class: "series-line", d });
+      lines.append(path);
+      if (animate) {
+        svg.append(lines);
+        const len = Math.ceil(path.getTotalLength());
+        path.style.strokeDasharray = len;
+        path.style.setProperty("--len", len);
+        path.classList.add("draw-in");
+      }
     });
-    // Mark the latest point, which is also the only one right after a reset
-    ys.forEach((y, k) => {
+
+    // Pulse on the latest point, which is also the only one right after a reset
+    ys.forEach((y) => {
       let i = y.length - 1;
       while (i >= 0 && !Number.isFinite(y[i])) i--;
-      if (i >= 0) lines.append(svgEl("circle", { class: "dot", r: 4, cx: sx(t[i]), cy: sy(y[i]), style: `fill: var(--series-${spec.series[k].slot})` }));
+      if (i < 0) return;
+      lines.append(svgEl("circle", { class: "last-ring", r: 5, cx: sx(t[i]), cy: sy(y[i]) }));
+      lines.append(svgEl("circle", { class: "dot", r: 5, cx: sx(t[i]), cy: sy(y[i]) }));
     });
     svg.append(lines);
+    if (t.length > 1) chart.drawn = true;
 
     const hover = svgEl("g", { visibility: "hidden" });
     const cross = svgEl("line", { class: "crosshair", y1: m.top, y2: m.top + ih });
-    const dots = spec.series.map((s) => svgEl("circle", { class: "dot", r: 4, style: `fill: var(--series-${s.slot})` }));
+    const dots = spec.series.map(() => svgEl("circle", { class: "dot", r: 4 }));
     hover.append(cross, ...dots);
     svg.append(hover);
 
@@ -514,7 +522,6 @@
       const y = v.ys[k][i];
       const row = el("div", "tip-row");
       const key = el("span", "key");
-      key.style.background = `var(--series-${s.slot})`;
       row.append(
         key,
         el("strong", null, Number.isFinite(y) ? `${y.toFixed(spec.decimals)} ${spec.unit}` : "—"),
@@ -600,34 +607,70 @@
     } else {
       banner.hidden = true;
     }
-
-    $("updated").textContent = Number.isFinite(last) ? `Last reading ${fullTime(last)}` : "";
   }
 
-  function renderTiles(view, average) {
-    const tiles = $("tiles");
-    tiles.replaceChildren();
-    const unit = UNITS[state.unitKey];
-    const last = lastTime(state.data);
+  // Counts a number up or down to its new value
+  function animateNumber(node, to, decimals) {
+    const from = node.value;
+    node.value = to;
+    cancelAnimationFrame(node.frame);
+    if (!Number.isFinite(to)) { node.textContent = "—"; return; }
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (!Number.isFinite(from) || reduced) { node.textContent = to.toFixed(decimals); return; }
+    const t0 = performance.now();
+    const step = (now) => {
+      const k = Math.min(1, (now - t0) / 700);
+      const eased = 1 - (1 - k) ** 3;
+      node.textContent = (from + (to - from) * eased).toFixed(decimals);
+      if (k < 1) node.frame = requestAnimationFrame(step);
+    };
+    node.frame = requestAnimationFrame(step);
+  }
 
-    const tile = (label, value, unitLabel, sub) => {
+  function renderHero(view, average) {
+    const unit = UNITS[state.unitKey];
+    const finite = [...average].filter(Number.isFinite);
+    const latest = finite.length ? finite[finite.length - 1] : NaN;
+    const n = activePairs(view.names).length;
+
+    animateNumber($("hero-value"), latest, unit.decimals);
+    $("hero-unit").textContent = Number.isFinite(latest) ? unit.label : "";
+
+    const delta = finite.length > 1 ? latest - finite[0] : NaN;
+    const since = state.resetAt && state.resetAt >= state.domain[0] ? "since reset" : "over 6 h";
+    $("hero-delta").textContent = Number.isFinite(delta) && Math.abs(delta) >= 10 ** -unit.decimals
+      ? `${delta > 0 ? "▲" : "▼"} ${Math.abs(delta).toFixed(unit.decimals)} ${unit.label} ${since}`
+      : Number.isFinite(delta) ? `Steady ${since}` : "";
+    const last = lastTime(state.data);
+    $("hero-sub").textContent = `Average of ${n} ${n === 1 ? "sensor" : "sensors"}` +
+      (Number.isFinite(last) ? ` · updated ${ago(Date.now() - last)}` : "");
+  }
+
+  function renderStats(view, average) {
+    const stats = $("stats");
+    stats.replaceChildren();
+    const last = lastTime(state.data);
+    const pairs = pairNames(view.names);
+
+    const stat = (label, value, unitLabel, sub) => {
       const card = el("div", "card");
-      const val = el("div", "tile-value", value);
-      if (unitLabel) val.append(el("span", "tile-unit", unitLabel));
-      card.append(el("div", "tile-label", label), val);
-      if (sub) card.append(el("div", "tile-sub", sub));
-      tiles.append(card);
+      const val = el("div", "stat-value", value);
+      if (unitLabel) val.append(el("span", "stat-unit", unitLabel));
+      card.append(el("div", "stat-label", label), val);
+      if (sub) card.append(el("div", "stat-sub", sub));
+      stats.append(card);
     };
 
-    const latest = average.length ? average[average.length - 1] : NaN;
-    const n = activePairs(view.names).length;
-    tile(CAL_CONFIG.analyte, Number.isFinite(latest) ? latest.toFixed(unit.decimals) : "—",
-      Number.isFinite(latest) ? unit.label : "", `average of ${n} ${n === 1 ? "channel" : "channels"}`);
-    tile("Last reading", Number.isFinite(last) ? ago(Date.now() - last) : "—", "",
+    const count = (k) => new Set(pairs.map((n) => PAIR_COLUMN.exec(n)[k])).size;
+    stat("Sensors averaged", String(activePairs(view.names).length), `of ${pairs.length}`,
+      `${count(2)} reference × ${count(3)} nitrate electrodes`);
+    stat("Readings", [...average].filter(Number.isFinite).length.toLocaleString(), "",
+      state.resetAt && state.resetAt >= state.domain[0] ? "since reset" : "in the last 6 h");
+    stat("Last reading", Number.isFinite(last) ? ago(Date.now() - last) : "—", "",
       Number.isFinite(last) ? fullTime(last) : "No data yet");
     if (state.data.values.vbat) {
       const { value } = latestValue(state.data, "vbat");
-      tile("Battery", Number.isFinite(value) ? value.toFixed(2) : "—", Number.isFinite(value) ? "V" : "");
+      stat("Logger battery", Number.isFinite(value) ? value.toFixed(2) : "—", Number.isFinite(value) ? "V" : "");
     }
   }
 
@@ -741,8 +784,10 @@
     const unit = UNITS[state.unitKey];
     const n = activePairs(state.view.names).length;
 
-    renderTiles(state.view, average);
+    renderHero(state.view, average);
+    renderStats(state.view, average);
     renderCalibration(state.data);
+    $("chart-sub").textContent = `Average of ${n} ${n === 1 ? "sensor" : "sensors"}, ${unit.label}`;
 
     state.charts = syncCharts($("charts"), [{
       id: "average",
@@ -776,7 +821,6 @@
   }
 
   function init() {
-    $("title").textContent = CONFIG.title;
     $("reset").addEventListener("click", resetPlot);
     $("download").addEventListener("click", downloadCsv);
 
